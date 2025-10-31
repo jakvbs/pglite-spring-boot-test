@@ -1,0 +1,35 @@
+# Maven / Gradle build output
+target/
+build/
+out/
+
+# IntelliJ IDEA / Eclipse / VS Code
+.idea/
+*.iml
+*.ipr
+*.iws
+.classpath
+.project
+.settings/
+.vscode/
+
+# Maven wrapper cache (keep jar itself)
+.mvn/wrapper/maven-wrapper.jar
+.mvn/wrapper/maven-wrapper.properties
+
+# Logs / temp files
+*.log
+*.tmp
+*.swp
+*.swo
+*.bak
+*.orig
+hs_err_pid*
+
+# OS generated files
+.DS_Store
+Thumbs.db
+
+# Local signing material
+.local-signing/
+
