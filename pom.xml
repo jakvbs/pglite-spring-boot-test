@@ -6,7 +6,7 @@
 
     <groupId>io.github.jakvbs</groupId>
     <artifactId>pglite-spring-boot-test</artifactId>
-    <version>0.1.0-SNAPSHOT</version>
+    <version>0.1.0</version>
     <name>pglite-spring-boot-test</name>
     <description>Spring Boot test auto-configuration for in-memory Postgres via PGlite (py-pglite)</description>
     <packaging>jar</packaging>
