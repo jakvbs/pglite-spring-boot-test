@@ -51,4 +51,36 @@ Optional properties (prefix `pglite.`):
 - Exit code 9009 indicates the Node executable was not found – set `pglite.node-command` or ensure `node` is on PATH.
 - Bundled Windows runtime includes Node.js 24.11.0 (MIT); the upstream LICENSE is shipped alongside the executable inside the packaged helper.
 
+## Example
+
+Spring Boot integration test using the starter:
+
+```java
+@SpringBootTest
+@ContextConfiguration(initializers = PgliteContextInitializer.class)
+@AutoConfigureTestDatabase(replace = AutoConfigureTestDatabase.Replace.NONE)
+class AccountRepositoryIT {
+
+    @Autowired
+    AccountRepository repository;
+
+    @Test
+    void savesAndLoadsAccounts() {
+        Account saved = repository.save(new Account("ACC-1"));
+        assertThat(repository.findById(saved.getId())).isPresent();
+    }
+}
+```
+
+`application-test.properties` (or whichever profile backs the test) should enable the starter:
+
+```properties
+pglite.enabled=true
+pglite.node-command=node
+spring.datasource.hikari.maximum-pool-size=1
+spring.datasource.hikari.minimum-idle=0
+```
+
+With that configuration, the initializer spins up the embedded PGWire server before the Spring context starts, and the starter supplies a single-connection `DataSource` that points at the in-memory PGlite instance.
+
 [PGlite]: https://github.com/electric-sql/pglite
