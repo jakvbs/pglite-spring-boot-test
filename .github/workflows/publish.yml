@@ -21,4 +21,4 @@ jobs:
           server-username: GITHUB_ACTOR
           server-password: GITHUB_TOKEN
       - name: Deploy to GitHub Packages (snapshot)
-        run: mvn -B -DskipTests deploy -DaltDeploymentRepository=github::default::https://maven.pkg.github.com/${{ github.repository }}
+        run: mvn -B -DskipTests deploy
