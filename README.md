@@ -84,3 +84,8 @@ spring.datasource.hikari.minimum-idle=0
 With that configuration, the initializer spins up the embedded PGWire server before the Spring context starts, and the starter supplies a single-connection `DataSource` that points at the in-memory PGlite instance.
 
 [PGlite]: https://github.com/electric-sql/pglite
+
+## Acknowledgements
+
+- [PGlite](https://github.com/electric-sql/pglite) – the WebAssembly PostgreSQL engine powering the starter.
+- [pg-gateway](https://github.com/launchdarkly/pg-gateway) – lightweight PGWire gateway leveraged by the helper runtime.
