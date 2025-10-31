@@ -42,6 +42,8 @@ Optional properties (prefix `pglite.`):
 - `database` – default `postgres`
 - `jdbc-params` – default `sslmode=disable&preferQueryMode=simple`
 - `path-prepend` – semicolon separated directories prepended to the `PATH` seen by the helper process
+- `runtime-download-url-template` – optional template (e.g. `https://example.com/runtime-{os}-{arch}.zip`) for platform-specific helper bundles (`{os}` = `linux`/`darwin`, `{arch}` = `x64`/`arm64`)
+- `runtime-cache-dir` – optional directory used to cache downloaded bundles
 
 ## Notes
 
@@ -82,6 +84,21 @@ spring.datasource.hikari.minimum-idle=0
 ```
 
 With that configuration, the initializer spins up the embedded PGWire server before the Spring context starts, and the starter supplies a single-connection `DataSource` that points at the in-memory PGlite instance.
+
+## Optional runtime bundles
+
+The embedded ZIP ships with:
+
+- `node_modules/` containing `@electric-sql/pglite` + `pg-gateway`
+- `node-win-x64/` with Node.js 24.11.0 for Windows (no external install required on Windows hosts)
+
+For macOS/Linux you can either keep relying on `node` present in `PATH` or provide additional runtime bundles by setting `pglite.runtime-download-url-template`. The template should evaluate to a ZIP that contains a Node distribution for the given platform together with the helper `node_modules`. Recommended naming convention:
+
+```
+https://example.com/pglite-runtime-{os}-{arch}.zip
+```
+
+where `{os}` is `linux` or `darwin`, and `{arch}` is `x64` or `arm64`. The starter downloads the archive on first use (into the optional `runtime-cache-dir` or the system temp), unpacks it alongside the helper, and adds the contained `bin/node` to the candidate list.
 
 [PGlite]: https://github.com/electric-sql/pglite
 

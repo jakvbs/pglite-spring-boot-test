@@ -36,6 +36,12 @@ public class PgliteProperties {
     /** Optional fixed database name (defaults to 'postgres'). */
     private String database = "postgres";
 
+    /** Optional template for downloading a platform-specific runtime archive (e.g. https://.../runtime-{os}-{arch}.zip). */
+    private String runtimeDownloadUrlTemplate;
+
+    /** Optional directory used to cache downloaded runtimes (defaults to system temp). */
+    private String runtimeCacheDir;
+
     public boolean isEnabled() { return enabled; }
     public void setEnabled(boolean enabled) { this.enabled = enabled; }
     public String getHost() { return host; }
@@ -56,5 +62,8 @@ public class PgliteProperties {
     public void setJdbcParams(String jdbcParams) { this.jdbcParams = jdbcParams; }
     public String getDatabase() { return database; }
     public void setDatabase(String database) { this.database = database; }
+    public String getRuntimeDownloadUrlTemplate() { return runtimeDownloadUrlTemplate; }
+    public void setRuntimeDownloadUrlTemplate(String runtimeDownloadUrlTemplate) { this.runtimeDownloadUrlTemplate = runtimeDownloadUrlTemplate; }
+    public String getRuntimeCacheDir() { return runtimeCacheDir; }
+    public void setRuntimeCacheDir(String runtimeCacheDir) { this.runtimeCacheDir = runtimeCacheDir; }
 }
-

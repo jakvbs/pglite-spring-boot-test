@@ -9,17 +9,20 @@ import java.io.File;
 import java.io.IOException;
 import java.io.InputStream;
 import java.io.InputStreamReader;
+import java.net.HttpURLConnection;
 import java.net.InetAddress;
 import java.net.ServerSocket;
+import java.net.URL;
 import java.nio.charset.StandardCharsets;
 import java.nio.file.Files;
 import java.nio.file.Path;
+import java.nio.file.StandardCopyOption;
 import java.time.Duration;
 import java.util.ArrayList;
 import java.util.Collections;
 import java.util.Comparator;
-import java.util.List;
 import java.util.LinkedHashSet;
+import java.util.List;
 import java.util.Locale;
 import java.util.Map;
 import java.util.Objects;
@@ -29,9 +32,9 @@ import java.util.concurrent.ExecutorService;
 import java.util.concurrent.Executors;
 import java.util.concurrent.TimeUnit;
 import java.util.concurrent.atomic.AtomicReference;
+import java.util.stream.Stream;
 import java.util.zip.ZipEntry;
 import java.util.zip.ZipInputStream;
-import java.nio.file.StandardCopyOption;
 
 /**
  * Manages a single Node-based helper process that exposes PGlite over PGWire.
@@ -48,6 +51,8 @@ final class PgliteServerProcess implements Closeable {
     private final Duration startupTimeout;
     private final String nodeCommand;
     private final String pathPrepend;
+    private final String runtimeDownloadUrlTemplate;
+    private final String runtimeCacheDir;
 
     private volatile int port;
     private final AtomicReference<Process> processRef = new AtomicReference<>();
@@ -55,12 +60,16 @@ final class PgliteServerProcess implements Closeable {
     private ExecutorService ioPool;
     private Path runtimeDir;
 
-    PgliteServerProcess(String host, int configuredPort, Duration startupTimeout, String nodeCommand, String pathPrepend) {
+    PgliteServerProcess(String host, int configuredPort, Duration startupTimeout,
+                        String nodeCommand, String pathPrepend,
+                        String runtimeDownloadUrlTemplate, String runtimeCacheDir) {
         this.host = Objects.requireNonNull(host);
         this.configuredPort = configuredPort;
         this.startupTimeout = Objects.requireNonNull(startupTimeout);
         this.nodeCommand = nodeCommand;
         this.pathPrepend = pathPrepend;
+        this.runtimeDownloadUrlTemplate = runtimeDownloadUrlTemplate;
+        this.runtimeCacheDir = runtimeCacheDir;
     }
 
     void start() {
@@ -314,6 +323,11 @@ final class PgliteServerProcess implements Closeable {
             if (Files.isRegularFile(embeddedNode)) {
                 ordered.add(List.of(embeddedNode.toString()));
             }
+        } else {
+            Path downloadedNode = ensureRuntimeForCurrentPlatform(runtimeDir);
+            if (downloadedNode != null) {
+                ordered.add(List.of(downloadedNode.toString()));
+            }
         }
 
         if (nodeCommand != null && !nodeCommand.isBlank()) {
@@ -390,6 +404,167 @@ final class PgliteServerProcess implements Closeable {
             parts.add(current.toString());
         }
         return parts;
+    }
+
+    private Path ensureRuntimeForCurrentPlatform(Path runtimeDir) {
+        if (runtimeDownloadUrlTemplate == null || runtimeDownloadUrlTemplate.isBlank()) {
+            return null;
+        }
+        if (isWindows()) {
+            return null;
+        }
+
+        String osToken = detectOsToken();
+        String archToken = detectArchToken();
+        Path targetDir = runtimeDir.resolve("node-" + osToken + "-" + archToken);
+
+        Path existing = resolveNodeExecutable(targetDir);
+        if (existing != null) {
+            setExecutable(existing);
+            return existing;
+        }
+
+        try {
+            Path cacheBase = runtimeCacheDir != null && !runtimeCacheDir.isBlank()
+                    ? Path.of(runtimeCacheDir)
+                    : Path.of(System.getProperty("java.io.tmpdir"), "pglite-runtime-cache");
+            Files.createDirectories(cacheBase);
+
+            String url = runtimeDownloadUrlTemplate
+                    .replace("{os}", osToken)
+                    .replace("{arch}", archToken);
+
+            Path archivePath = cacheBase.resolve("runtime-" + osToken + "-" + archToken + ".zip");
+            downloadIfNeeded(url, archivePath);
+
+            Path extractedDir = cacheBase.resolve("runtime-" + osToken + "-" + archToken);
+            unzip(archivePath, extractedDir);
+
+            if (Files.exists(targetDir)) {
+                deleteRecursively(targetDir);
+            }
+            copyDirectory(extractedDir, targetDir);
+
+            Path nodeBinary = resolveNodeExecutable(targetDir);
+            if (nodeBinary == null) {
+                throw new IllegalStateException("Downloaded runtime from " + url + " does not contain a Node executable");
+            }
+            setExecutable(nodeBinary);
+            return nodeBinary;
+        } catch (IOException ex) {
+            throw new IllegalStateException("Failed to download platform runtime", ex);
+        }
+    }
+
+    private void downloadIfNeeded(String urlString, Path destination) throws IOException {
+        if (Files.isRegularFile(destination)) {
+            return;
+        }
+        log.info("Downloading PGlite runtime from {}", urlString);
+        URL url = new URL(urlString);
+        HttpURLConnection connection = (HttpURLConnection) url.openConnection();
+        connection.setConnectTimeout(15_000);
+        connection.setReadTimeout(60_000);
+        connection.setRequestProperty("User-Agent", "pglite-spring-boot-test");
+        int status = connection.getResponseCode();
+        if (status >= 400) {
+            throw new IOException("Failed to download " + urlString + ": HTTP " + status);
+        }
+        Files.createDirectories(destination.getParent());
+        try (InputStream in = connection.getInputStream()) {
+            Files.copy(in, destination, StandardCopyOption.REPLACE_EXISTING);
+        } finally {
+            connection.disconnect();
+        }
+    }
+
+    private void unzip(Path zipFile, Path destination) throws IOException {
+        if (Files.exists(destination)) {
+            deleteRecursively(destination);
+        }
+        Files.createDirectories(destination);
+        try (ZipInputStream zip = new ZipInputStream(Files.newInputStream(zipFile))) {
+            ZipEntry entry;
+            while ((entry = zip.getNextEntry()) != null) {
+                Path target = destination.resolve(entry.getName()).normalize();
+                if (!target.startsWith(destination)) {
+                    throw new IOException("Zip entry outside target dir: " + entry.getName());
+                }
+                if (entry.isDirectory()) {
+                    Files.createDirectories(target);
+                } else {
+                    Files.createDirectories(target.getParent());
+                    Files.copy(zip, target, StandardCopyOption.REPLACE_EXISTING);
+                }
+            }
+        }
+    }
+
+    private void copyDirectory(Path source, Path destination) throws IOException {
+        try (Stream<Path> paths = Files.walk(source)) {
+            for (Path path : (Iterable<Path>) paths::iterator) {
+                Path relative = source.relativize(path);
+                Path target = destination.resolve(relative);
+                if (Files.isDirectory(path)) {
+                    Files.createDirectories(target);
+                } else {
+                    Files.createDirectories(target.getParent());
+                    Files.copy(path, target, StandardCopyOption.REPLACE_EXISTING);
+                }
+            }
+        }
+    }
+
+    private Path resolveNodeExecutable(Path baseDir) {
+        if (baseDir == null || !Files.exists(baseDir)) {
+            return null;
+        }
+        Path candidate = baseDir.resolve("bin").resolve(isWindows() ? "node.exe" : "node");
+        if (Files.isRegularFile(candidate)) {
+            return candidate;
+        }
+        try (Stream<Path> paths = Files.walk(baseDir)) {
+            return paths.filter(Files::isRegularFile)
+                    .filter(p -> {
+                        String name = p.getFileName().toString();
+                        return name.equals("node") || name.equals("node.exe");
+                    })
+                    .findFirst()
+                    .orElse(null);
+        } catch (IOException ex) {
+            throw new IllegalStateException("Failed to locate node executable", ex);
+        }
+    }
+
+    private void setExecutable(Path path) {
+        try {
+            File file = path.toFile();
+            if (!file.canExecute()) {
+                // make executable for owner/group/others when possible
+                file.setExecutable(true, false);
+            }
+        } catch (SecurityException ex) {
+            log.debug("Unable to mark {} as executable: {}", path, ex.getMessage());
+        }
+    }
+
+    private String detectOsToken() {
+        String os = System.getProperty("os.name", "").toLowerCase(Locale.ROOT);
+        if (os.contains("mac") || os.contains("darwin")) {
+            return "darwin";
+        }
+        if (os.contains("win")) {
+            return "win";
+        }
+        return "linux";
+    }
+
+    private String detectArchToken() {
+        String arch = System.getProperty("os.arch", "").toLowerCase(Locale.ROOT);
+        if (arch.contains("aarch64") || arch.contains("arm64")) {
+            return "arm64";
+        }
+        return "x64";
     }
 
     private int findAvailablePort() {
