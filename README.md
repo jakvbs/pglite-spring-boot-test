@@ -1,6 +1,6 @@
 # pglite-spring-boot-test
 
-Spring Boot test auto-configuration that launches an in-memory PostgreSQL compatible endpoint backed by [PGlite] (WebAssembly) and exposes it via PGWire. The module injects a single-connection `DataSource` so integration tests can run without Docker, Testcontainers, or native Postgres binaries.
+Spring Boot auto-configuration that launches an in-memory PostgreSQL-compatible endpoint backed by [PGlite] (WebAssembly). It exposes PGWire via the bundled helper runtime and injects a single-connection `DataSource`, so integration tests and local profiles can run without Docker, Testcontainers, or native Postgres binaries.
 
 - Single active connection (PGlite limitation)
 - No SSL; JDBC URL enforces `sslmode=disable` and `preferQueryMode=simple`
