@@ -1,0 +1,27 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<databaseChangeLog xmlns="http://www.liquibase.org/xml/ns/dbchangelog"
+                   xmlns:xsi="http://www.w3.org/2001/XMLSchema-instance"
+                   xsi:schemaLocation="http://www.liquibase.org/xml/ns/dbchangelog
+                   https://www.liquibase.org/xml/ns/dbchangelog/dbchangelog-4.23.xsd">
+    <changeSet id="create-sample-table" author="pglite">
+        <createTable tableName="sample_people">
+            <column name="person_id" type="INTEGER">
+                <constraints primaryKey="true" nullable="false"/>
+            </column>
+            <column name="full_name" type="VARCHAR(128)">
+                <constraints nullable="false"/>
+            </column>
+        </createTable>
+    </changeSet>
+
+    <changeSet id="seed-sample-data" author="pglite">
+        <insert tableName="sample_people">
+            <column name="person_id" valueNumeric="1"/>
+            <column name="full_name" value="Alice"/>
+        </insert>
+        <insert tableName="sample_people">
+            <column name="person_id" valueNumeric="2"/>
+            <column name="full_name" value="Bob"/>
+        </insert>
+    </changeSet>
+</databaseChangeLog>

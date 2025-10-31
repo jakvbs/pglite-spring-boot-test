@@ -100,9 +100,15 @@ https://example.com/pglite-runtime-{os}-{arch}.zip
 
 where `{os}` is `linux` or `darwin`, and `{arch}` is `x64` or `arm64`. The starter downloads the archive on first use (into the optional `runtime-cache-dir` or the system temp), unpacks it alongside the helper, and adds the contained `bin/node` to the candidate list.
 
+## Development
+
+- `PgliteServerProcessIntegrationTest` exercises Liquibase migrations, prepared statements, and the single-connection JDBC path exposed by the Node helper.
+- `PgliteAutoConfigurationIntegrationTest` boots the auto-configuration through `ApplicationContextRunner` to verify the Spring context wiring and Liquibase bootstrap.
+- GitHub Actions runs `mvn test` on Ubuntu, macOS, and Windows runners (see `.github/workflows/ci.yml`) to guard platform-specific regressions.
+
 [PGlite]: https://github.com/electric-sql/pglite
 
 ## Acknowledgements
 
 - [PGlite](https://github.com/electric-sql/pglite) – the WebAssembly PostgreSQL engine powering the starter.
-- [pg-gateway](https://github.com/launchdarkly/pg-gateway) – lightweight PGWire gateway leveraged by the helper runtime.
+- [pg-gateway](https://github.com/supabase-community/pg-gateway) – lightweight PGWire gateway leveraged by the helper runtime.
