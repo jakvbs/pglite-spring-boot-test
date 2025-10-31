@@ -2,70 +2,96 @@ package com.euronext.pglite.spring.test;
 
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
-import org.springframework.util.StreamUtils;
 
-import java.io.*;
+import java.io.BufferedReader;
+import java.io.Closeable;
+import java.io.File;
+import java.io.IOException;
+import java.io.InputStream;
+import java.io.InputStreamReader;
 import java.net.InetAddress;
 import java.net.ServerSocket;
 import java.nio.charset.StandardCharsets;
 import java.nio.file.Files;
 import java.nio.file.Path;
 import java.time.Duration;
-import java.util.*;
+import java.util.ArrayList;
+import java.util.Collections;
+import java.util.Comparator;
+import java.util.List;
+import java.util.LinkedHashSet;
+import java.util.Locale;
+import java.util.Map;
+import java.util.Objects;
+import java.util.Set;
 import java.util.concurrent.CountDownLatch;
 import java.util.concurrent.ExecutorService;
 import java.util.concurrent.Executors;
 import java.util.concurrent.TimeUnit;
 import java.util.concurrent.atomic.AtomicReference;
+import java.util.zip.ZipEntry;
+import java.util.zip.ZipInputStream;
+import java.nio.file.StandardCopyOption;
 
 /**
- * Manages a single py-pglite helper process that exposes PGWire over TCP.
+ * Manages a single Node-based helper process that exposes PGlite over PGWire.
  */
 final class PgliteServerProcess implements Closeable {
     private static final Logger log = LoggerFactory.getLogger(PgliteServerProcess.class);
+    private static final String RUNTIME_ARCHIVE_RESOURCE = "/pglite/runtime.zip";
 
     private final String host;
     private final int configuredPort;
     private final Duration startupTimeout;
-    private final String pythonExe;
+    private final String nodeCommand;
     private final String pathPrepend;
 
     private volatile int port;
     private final AtomicReference<Process> processRef = new AtomicReference<>();
     private final List<String> outputBuffer = Collections.synchronizedList(new ArrayList<>());
     private ExecutorService ioPool;
+    private Path runtimeDir;
 
-    PgliteServerProcess(String host, int configuredPort, Duration startupTimeout, String pythonExe, String pathPrepend) {
+    PgliteServerProcess(String host, int configuredPort, Duration startupTimeout, String nodeCommand, String pathPrepend) {
         this.host = Objects.requireNonNull(host);
         this.configuredPort = configuredPort;
         this.startupTimeout = Objects.requireNonNull(startupTimeout);
-        this.pythonExe = pythonExe;
+        this.nodeCommand = nodeCommand;
         this.pathPrepend = pathPrepend;
     }
 
     void start() {
-        if (processRef.get() != null) return;
+        if (processRef.get() != null) {
+            return;
+        }
+
+        runtimeDir = extractRuntime();
+        Path script = runtimeDir.resolve("start.mjs");
+        if (!Files.isRegularFile(script)) {
+            throw new IllegalStateException("Missing PGlite helper script at " + script);
+        }
 
         int portToUse = configuredPort > 0 ? configuredPort : findAvailablePort();
         this.port = portToUse;
 
-        Path script = extractHelperScript();
-        List<String[]> commandCandidates = buildPythonCommandCandidates(script);
-
+        List<String[]> commandCandidates = buildNodeCommandCandidates(script);
         List<String> attemptErrors = new ArrayList<>();
+
         for (String[] candidate : commandCandidates) {
             String joined = String.join(" ", candidate);
             try {
                 ProcessBuilder pb = new ProcessBuilder(candidate);
                 pb.redirectErrorStream(true);
+                pb.directory(runtimeDir.toFile());
+
                 Map<String, String> env = pb.environment();
                 env.put("PGLITE_PORT", Integer.toString(portToUse));
                 env.put("PGLITE_HOST", host);
                 if (pathPrepend != null && !pathPrepend.isBlank()) {
-                    String sep = File.pathSeparator;
-                    env.put("PATH", pathPrepend + sep + env.getOrDefault("PATH", ""));
+                    env.put("PATH", pathPrepend + File.pathSeparator + env.getOrDefault("PATH", ""));
                 }
-                Process p = pb.start();
+
+                Process process = pb.start();
                 this.ioPool = Executors.newSingleThreadExecutor(r -> {
                     Thread t = new Thread(r, "pglite-io");
                     t.setDaemon(true);
@@ -73,51 +99,87 @@ final class PgliteServerProcess implements Closeable {
                 });
                 CountDownLatch ready = new CountDownLatch(1);
                 AtomicReference<Throwable> readErr = new AtomicReference<>();
-                this.ioPool.submit(() -> readLoop(p.getInputStream(), ready, readErr));
-                awaitReady(ready, readErr, p);
-                this.processRef.set(p);
+                ioPool.submit(() -> readLoop(process.getInputStream(), ready, readErr));
+                awaitReady(ready, readErr, process);
+                this.processRef.set(process);
                 Runtime.getRuntime().addShutdownHook(new Thread(this::safeStop));
                 log.info("PGlite started on {}:{} via {}", host, portToUse, joined);
                 return;
             } catch (IOException ex) {
-                int code = -1;
-                try { code = processRef.get() != null && processRef.get().isAlive() ? processRef.get().exitValue() : -1; } catch (Exception ignored) {}
-                attemptErrors.add(joined + " -> " + ex.getClass().getSimpleName() + ": " + ex.getMessage() + (code >= 0 ? (", exit=" + code) : ""));
+                attemptErrors.add(joined + " -> " + ex.getMessage());
             } catch (IllegalStateException ex) {
                 attemptErrors.add(joined + " -> " + ex.getMessage());
             }
         }
-        String joined = String.join(" | ", attemptErrors);
-        throw new IllegalStateException("Failed to start py-pglite. Attempts: " + joined);
+
+        throw new IllegalStateException("Failed to start Node PGlite helper. Attempts: " + String.join(" | ", attemptErrors));
     }
 
-    private void awaitReady(CountDownLatch latch, AtomicReference<Throwable> readErr, Process p) {
-        boolean ok;
-        try { ok = latch.await(startupTimeout.toMillis(), TimeUnit.MILLISECONDS); }
-        catch (InterruptedException ie) {
-            Thread.currentThread().interrupt();
-            safeDestroy(p);
-            throw new IllegalStateException("Interrupted while waiting for PGlite READY");
+    private Path extractRuntime() {
+        try (InputStream in = PgliteServerProcess.class.getResourceAsStream(RUNTIME_ARCHIVE_RESOURCE)) {
+            if (in == null) {
+                throw new IllegalStateException("Runtime archive " + RUNTIME_ARCHIVE_RESOURCE + " not found on classpath");
+            }
+            Path dir = Files.createTempDirectory("pglite-node-runtime");
+            try (ZipInputStream zip = new ZipInputStream(in)) {
+                ZipEntry entry;
+                while ((entry = zip.getNextEntry()) != null) {
+                    Path target = dir.resolve(entry.getName()).normalize();
+                    if (!target.startsWith(dir)) {
+                        throw new IOException("Zip entry outside target dir: " + entry.getName());
+                    }
+                    if (entry.isDirectory()) {
+                        Files.createDirectories(target);
+                    } else {
+                        Files.createDirectories(target.getParent());
+                        Files.copy(zip, target, StandardCopyOption.REPLACE_EXISTING);
+                        if (isExecutable(entry.getName())) {
+                            target.toFile().setExecutable(true, false);
+                        }
+                    }
+                }
+            }
+            return dir;
+        } catch (IOException ex) {
+            throw new IllegalStateException("Failed to extract embedded PGlite runtime", ex);
         }
+    }
+
+    private boolean isExecutable(String name) {
+        String lower = name.toLowerCase(Locale.ROOT);
+        return lower.endsWith(".sh") || lower.endsWith(".cmd") || lower.endsWith(".bat");
+    }
+
+    private void awaitReady(CountDownLatch latch, AtomicReference<Throwable> readErr, Process process) {
+        boolean ok;
+        try {
+            ok = latch.await(startupTimeout.toMillis(), TimeUnit.MILLISECONDS);
+        } catch (InterruptedException ex) {
+            Thread.currentThread().interrupt();
+            safeDestroy(process);
+            throw new IllegalStateException("Interrupted while waiting for PGlite READY", ex);
+        }
+
         if (!ok) {
-            safeDestroy(p);
+            safeDestroy(process);
             throw new IllegalStateException("Timed out waiting for PGlite. Output: " + joinOutput());
         }
+
         if (readErr.get() != null) {
-            safeDestroy(p);
-            throw new IllegalStateException("Failed to read PGlite output: " + readErr.get().getMessage() + "; Output: " + joinOutput(), readErr.get());
+            safeDestroy(process);
+            throw new IllegalStateException("Failed to read PGlite output. Output: " + joinOutput(), readErr.get());
         }
-        if (!p.isAlive()) {
-            int exit = p.exitValue();
-            String hint = exit == 9009 ? " (Windows: python not found on PATH)" : "";
-            throw new IllegalStateException("py-pglite process exited with code " + exit + hint + ". Output: " + joinOutput());
+
+        if (!process.isAlive()) {
+            String hint = process.exitValue() == 9009 ? " (Windows: node command not found)" : "";
+            throw new IllegalStateException("PGlite helper exited with code " + process.exitValue() + hint + ". Output: " + joinOutput());
         }
     }
 
-    private void readLoop(InputStream in, CountDownLatch ready, AtomicReference<Throwable> readErr) {
-        try (BufferedReader br = new BufferedReader(new InputStreamReader(in, StandardCharsets.UTF_8))) {
+    private void readLoop(InputStream inputStream, CountDownLatch ready, AtomicReference<Throwable> readErr) {
+        try (BufferedReader reader = new BufferedReader(new InputStreamReader(inputStream, StandardCharsets.UTF_8))) {
             String line;
-            while ((line = br.readLine()) != null) {
+            while ((line = reader.readLine()) != null) {
                 appendOutput(line);
                 if (line.contains("\"event\"")) {
                     if (line.contains("\"READY\"")) {
@@ -134,125 +196,191 @@ final class PgliteServerProcess implements Closeable {
     }
 
     private void appendOutput(String line) {
-        if (line == null) return;
         synchronized (outputBuffer) {
             outputBuffer.add(line);
-            if (outputBuffer.size() > 200) outputBuffer.remove(0);
+            if (outputBuffer.size() > 200) {
+                outputBuffer.remove(0);
+            }
         }
     }
 
     private String joinOutput() {
         StringBuilder sb = new StringBuilder();
         synchronized (outputBuffer) {
-            for (String l : outputBuffer) {
-                if (!sb.isEmpty()) sb.append(" | ");
-                sb.append(l);
+            for (String entry : outputBuffer) {
+                if (sb.length() > 0) {
+                    sb.append(" | ");
+                }
+                sb.append(entry);
             }
         }
         return sb.toString();
     }
 
-    private void safeDestroy(Process p) {
-        if (p != null && p.isAlive()) {
-            p.destroyForcibly();
+    private void safeDestroy(Process process) {
+        if (process != null && process.isAlive()) {
+            process.destroyForcibly();
         }
     }
 
     private void safeStop() {
-        try { close(); } catch (IOException ignored) {}
+        try {
+            close();
+        } catch (IOException ignored) {
+        }
     }
 
     @Override
     public void close() throws IOException {
-        Process p = processRef.getAndSet(null);
-        if (p != null) {
-            p.destroy();
-            try { p.waitFor(5, TimeUnit.SECONDS); } catch (InterruptedException ignored) { Thread.currentThread().interrupt(); }
-            if (p.isAlive()) p.destroyForcibly();
+        Process process = processRef.getAndSet(null);
+        if (process != null) {
+            process.destroy();
+            try {
+                process.waitFor(5, TimeUnit.SECONDS);
+            } catch (InterruptedException ex) {
+                Thread.currentThread().interrupt();
+            }
+            if (process.isAlive()) {
+                process.destroyForcibly();
+            }
         }
         if (ioPool != null) {
             ioPool.shutdownNow();
-            try { ioPool.awaitTermination(2, TimeUnit.SECONDS); } catch (InterruptedException ignored) { Thread.currentThread().interrupt(); }
+            try {
+                ioPool.awaitTermination(2, TimeUnit.SECONDS);
+            } catch (InterruptedException ex) {
+                Thread.currentThread().interrupt();
+            }
+        }
+        if (runtimeDir != null) {
+            try {
+                deleteRecursively(runtimeDir);
+            } catch (IOException ex) {
+                log.debug("Failed to clean runtime dir {}: {}", runtimeDir, ex.getMessage());
+            }
         }
     }
 
-    String host() { return host; }
-    int port() { return port; }
+    private void deleteRecursively(Path path) throws IOException {
+        if (!Files.exists(path)) {
+            return;
+        }
+        try (var stream = Files.walk(path)) {
+            stream.sorted(Comparator.reverseOrder())
+                    .forEach(p -> {
+                        try {
+                            Files.deleteIfExists(p);
+                        } catch (IOException ex) {
+                            log.debug("Failed to delete {}: {}", p, ex.getMessage());
+                        }
+                    });
+        }
+    }
+
+    String host() {
+        return host;
+    }
+
+    int port() {
+        return port;
+    }
 
     String jdbcUrl(String database, String params) {
         String qp = (params == null || params.isBlank()) ? "" : ("?" + params);
         return "jdbc:postgresql://" + host + ":" + port + "/" + database + qp;
     }
 
-    private int findAvailablePort() {
-        try (ServerSocket s = new ServerSocket(0, 0, InetAddress.getByName(host))) {
-            return s.getLocalPort();
-        } catch (IOException e) {
-            throw new IllegalStateException("Unable to allocate a free TCP port for PGlite", e);
-        }
-    }
+    private List<String[]> buildNodeCommandCandidates(Path script) {
+        List<List<String>> ordered = new ArrayList<>();
 
-    private List<String[]> buildPythonCommandCandidates(Path script) {
-        List<String[]> out = new ArrayList<>();
-        // explicit from props
-        String explicit = this.pythonExe != null && !this.pythonExe.isBlank() ? this.pythonExe : System.getenv("PYTHON_EXE");
-        if (explicit != null && !explicit.isBlank()) {
-            out.add(command(explicit, script));
-        }
         if (isWindows()) {
-            out.add(new String[] { "py", "-3", "-u", script.toString() });
-            out.add(new String[] { "python", "-u", script.toString() });
-            out.add(new String[] { "python3", "-u", script.toString() });
-        } else {
-            out.add(new String[] { "python3", "-u", script.toString() });
-            out.add(new String[] { "python", "-u", script.toString() });
-        }
-        return out;
-    }
-
-    private static boolean isWindows() {
-        String os = System.getProperty("os.name", "").toLowerCase(Locale.ROOT);
-        return os.contains("win");
-    }
-
-    private String[] command(String raw, Path script) {
-        List<String> parts = parseCommand(raw);
-        parts.add("-u");
-        parts.add(script.toString());
-        return parts.toArray(new String[0]);
-    }
-
-    private static List<String> parseCommand(String cmd) {
-        List<String> parts = new ArrayList<>();
-        StringBuilder cur = new StringBuilder();
-        boolean inQ = false; char qc = 0;
-        for (int i=0;i<cmd.length();i++) {
-            char c = cmd.charAt(i);
-            if (inQ) {
-                if (c == qc) inQ = false; else if (c=='\\' && i+1<cmd.length() && cmd.charAt(i+1)==qc) { cur.append(qc); i++; } else cur.append(c);
-            } else {
-                if (Character.isWhitespace(c)) { if (!cur.isEmpty()) { parts.add(cur.toString()); cur.setLength(0);} }
-                else if (c=='"' || c=='\'') { inQ = true; qc = c; }
-                else cur.append(c);
+            Path embeddedNode = runtimeDir.resolve("node-win-x64").resolve("node.exe");
+            if (Files.isRegularFile(embeddedNode)) {
+                ordered.add(List.of(embeddedNode.toString()));
             }
         }
-        if (!cur.isEmpty()) parts.add(cur.toString());
+
+        if (nodeCommand != null && !nodeCommand.isBlank()) {
+            ordered.addAll(parseCommands(nodeCommand));
+        }
+
+        ordered.add(List.of("node"));
+        ordered.add(List.of("node.exe"));
+        ordered.add(List.of("nodejs"));
+
+        Set<List<String>> unique = new LinkedHashSet<>(ordered);
+
+        List<String[]> result = new ArrayList<>(unique.size());
+        for (List<String> base : unique) {
+            List<String> full = new ArrayList<>(base.size() + 1);
+            full.addAll(base);
+            full.add(script.toString());
+            result.add(full.toArray(new String[0]));
+        }
+        return result;
+    }
+
+    private boolean isWindows() {
+        String os = System.getProperty("os.name", "");
+        return os.toLowerCase(Locale.ROOT).contains("win");
+    }
+
+    private List<List<String>> parseCommands(String raw) {
+        List<List<String>> commands = new ArrayList<>();
+        for (String candidate : raw.split(";")) {
+            String trimmed = candidate.trim();
+            if (trimmed.isEmpty()) {
+                continue;
+            }
+            commands.add(parseCommand(trimmed));
+        }
+        return commands;
+    }
+
+    private List<String> parseCommand(String command) {
+        List<String> parts = new ArrayList<>();
+        StringBuilder current = new StringBuilder();
+        boolean inQuotes = false;
+        char quoteChar = 0;
+        for (int i = 0; i < command.length(); i++) {
+            char c = command.charAt(i);
+            if (inQuotes) {
+                if (c == quoteChar) {
+                    inQuotes = false;
+                } else if (c == '\\' && i + 1 < command.length() && command.charAt(i + 1) == quoteChar) {
+                    current.append(quoteChar);
+                    i++;
+                } else {
+                    current.append(c);
+                }
+            } else {
+                if (Character.isWhitespace(c)) {
+                    if (current.length() > 0) {
+                        parts.add(current.toString());
+                        current.setLength(0);
+                    }
+                } else if (c == '"' || c == '\'') {
+                    inQuotes = true;
+                    quoteChar = c;
+                } else {
+                    current.append(c);
+                }
+            }
+        }
+        if (inQuotes) {
+            throw new IllegalStateException("Unterminated quotes in command: " + command);
+        }
+        if (current.length() > 0) {
+            parts.add(current.toString());
+        }
         return parts;
     }
 
-    private Path extractHelperScript() {
-        try {
-            Path dir = Files.createTempDirectory("pglite-helper-");
-            Path script = dir.resolve("start.py");
-            try (InputStream in = PgliteServerProcess.class.getResourceAsStream("/pglite/start.py")) {
-                if (in == null) throw new FileNotFoundException("Resource /pglite/start.py not found in JAR");
-                Files.copy(in, script);
-            }
-            // Best effort on POSIX
-            try { script.toFile().setExecutable(true); } catch (Throwable ignored) {}
-            return script;
-        } catch (IOException e) {
-            throw new IllegalStateException("Unable to extract helper script", e);
+    private int findAvailablePort() {
+        try (ServerSocket socket = new ServerSocket(0, 0, InetAddress.getByName(host))) {
+            return socket.getLocalPort();
+        } catch (IOException ex) {
+            throw new IllegalStateException("Unable to allocate TCP port for PGlite", ex);
         }
     }
 }

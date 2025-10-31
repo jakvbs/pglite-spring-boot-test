@@ -22,7 +22,7 @@ public class PgliteAutoConfiguration {
     @Bean(initMethod = "start", destroyMethod = "close")
     PgliteServerProcess pgliteServerProcess(PgliteProperties props) {
         return new PgliteServerProcess(
-                props.getHost(), props.getPort(), props.getStartupTimeout(), props.getPythonExe(), props.getPathPrepend()
+                props.getHost(), props.getPort(), props.getStartupTimeout(), props.getNodeCommand(), props.getPathPrepend()
         );
     }
 

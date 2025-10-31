@@ -15,8 +15,8 @@ public class PgliteProperties {
     /** Port to bind; 0 means auto-pick a free port. */
     private int port = 0;
 
-    /** Python executable, e.g. "C:\\Python312\\python.exe" or "py -3". */
-    private String pythonExe;
+    /** Node executable command, e.g. "node" or "C:\\Program Files\\nodejs\\node.exe". */
+    private String nodeCommand;
 
     /** Startup timeout for the helper process. */
     private Duration startupTimeout = Duration.ofSeconds(30);
@@ -42,8 +42,8 @@ public class PgliteProperties {
     public void setHost(String host) { this.host = host; }
     public int getPort() { return port; }
     public void setPort(int port) { this.port = port; }
-    public String getPythonExe() { return pythonExe; }
-    public void setPythonExe(String pythonExe) { this.pythonExe = pythonExe; }
+    public String getNodeCommand() { return nodeCommand; }
+    public void setNodeCommand(String nodeCommand) { this.nodeCommand = nodeCommand; }
     public Duration getStartupTimeout() { return startupTimeout; }
     public void setStartupTimeout(Duration startupTimeout) { this.startupTimeout = startupTimeout; }
     public String getUsername() { return username; }
