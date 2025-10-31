@@ -1,0 +1,17 @@
+{
+  "name": "shareholder-register-pglite-helper",
+  "version": "0.1.0",
+  "description": "PGlite helper runtime used by shareholder-register embedded profile tests.",
+  "type": "module",
+  "main": "start.mjs",
+  "scripts": {
+    "start": "node start.mjs"
+  },
+  "dependencies": {
+    "@electric-sql/pglite": "^0.3.11",
+    "pg-gateway": "^0.3.0-beta.4"
+  },
+  "engines": {
+    "node": ">=18.0.0"
+  }
+}

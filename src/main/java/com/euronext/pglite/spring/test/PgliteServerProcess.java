@@ -39,6 +39,9 @@ import java.nio.file.StandardCopyOption;
 final class PgliteServerProcess implements Closeable {
     private static final Logger log = LoggerFactory.getLogger(PgliteServerProcess.class);
     private static final String RUNTIME_ARCHIVE_RESOURCE = "/pglite/runtime.zip";
+    private static final String START_SCRIPT_RESOURCE = "/pglite/start.mjs";
+    private static final String PACKAGE_JSON_RESOURCE = "/pglite/package.json";
+    private static final String PACKAGE_LOCK_RESOURCE = "/pglite/package-lock.json";
 
     private final String host;
     private final int configuredPort;
@@ -139,9 +142,22 @@ final class PgliteServerProcess implements Closeable {
                     }
                 }
             }
+            copyResource(START_SCRIPT_RESOURCE, dir.resolve("start.mjs"));
+            copyResource(PACKAGE_JSON_RESOURCE, dir.resolve("package.json"));
+            copyResource(PACKAGE_LOCK_RESOURCE, dir.resolve("package-lock.json"));
             return dir;
         } catch (IOException ex) {
             throw new IllegalStateException("Failed to extract embedded PGlite runtime", ex);
+        }
+    }
+
+    private void copyResource(String resource, Path target) throws IOException {
+        try (InputStream src = PgliteServerProcess.class.getResourceAsStream(resource)) {
+            if (src == null) {
+                throw new IllegalStateException("Resource " + resource + " not found on classpath");
+            }
+            Files.createDirectories(target.getParent());
+            Files.copy(src, target, StandardCopyOption.REPLACE_EXISTING);
         }
     }
 
