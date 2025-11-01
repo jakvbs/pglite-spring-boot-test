@@ -10,6 +10,8 @@ import java.io.IOException;
 import java.io.InputStream;
 import java.io.InputStreamReader;
 import java.net.HttpURLConnection;
+import java.nio.channels.FileChannel;
+import java.nio.channels.FileLock;
 import java.net.InetAddress;
 import java.net.ServerSocket;
 import java.net.URL;
@@ -17,8 +19,12 @@ import java.nio.charset.StandardCharsets;
 import java.nio.file.Files;
 import java.nio.file.Path;
 import java.nio.file.StandardCopyOption;
+import java.nio.file.StandardOpenOption;
 import java.time.Duration;
 import java.util.ArrayList;
+import java.security.DigestInputStream;
+import java.security.MessageDigest;
+import java.security.NoSuchAlgorithmException;
 import java.util.Collections;
 import java.util.Comparator;
 import java.util.LinkedHashMap;
@@ -55,6 +61,7 @@ final class PgliteServerProcess implements Closeable {
     private final String pathPrepend;
     private final String runtimeDownloadUrlTemplate;
     private final String runtimeCacheDir;
+    private final String runtimeDownloadSha256Template;
     private final String jdbcUsername;
     private final String jdbcPassword;
     private final PgliteProperties.LogLevel logLevel;
@@ -68,6 +75,7 @@ final class PgliteServerProcess implements Closeable {
     PgliteServerProcess(String host, int configuredPort, Duration startupTimeout,
                         String nodeCommand, String pathPrepend,
                         String runtimeDownloadUrlTemplate, String runtimeCacheDir,
+                        String runtimeDownloadSha256Template,
                         String jdbcUsername, String jdbcPassword,
                         PgliteProperties.LogLevel logLevel) {
         this.host = Objects.requireNonNull(host);
@@ -77,6 +85,7 @@ final class PgliteServerProcess implements Closeable {
         this.pathPrepend = pathPrepend;
         this.runtimeDownloadUrlTemplate = runtimeDownloadUrlTemplate;
         this.runtimeCacheDir = runtimeCacheDir;
+        this.runtimeDownloadSha256Template = runtimeDownloadSha256Template;
         this.jdbcUsername = jdbcUsername;
         this.jdbcPassword = jdbcPassword;
         this.logLevel = logLevel == null ? PgliteProperties.LogLevel.defaultLevel() : logLevel;
@@ -465,9 +474,10 @@ final class PgliteServerProcess implements Closeable {
             String url = runtimeDownloadUrlTemplate
                     .replace("{os}", osToken)
                     .replace("{arch}", archToken);
+            String expectedSha256 = resolveTemplate(runtimeDownloadSha256Template, osToken, archToken);
 
             Path archivePath = cacheBase.resolve("runtime-" + osToken + "-" + archToken + ".zip");
-            downloadIfNeeded(url, archivePath);
+            downloadAndVerifyArchive(url, archivePath, expectedSha256);
 
             Path extractedDir = cacheBase.resolve("runtime-" + osToken + "-" + archToken);
             unzip(archivePath, extractedDir);
@@ -488,11 +498,38 @@ final class PgliteServerProcess implements Closeable {
         }
     }
 
-    private void downloadIfNeeded(String urlString, Path destination) throws IOException {
-        if (Files.isRegularFile(destination)) {
-            return;
+    private void downloadAndVerifyArchive(String urlString, Path destination, String expectedSha256) throws IOException {
+        Files.createDirectories(destination.getParent());
+        Path lockPath = destination.resolveSibling(destination.getFileName().toString() + ".lock");
+        try (FileChannel channel = FileChannel.open(lockPath, StandardOpenOption.CREATE, StandardOpenOption.WRITE);
+             FileLock ignored = channel.lock()) {
+
+            if (Files.isRegularFile(destination)) {
+                if (expectedSha256 == null) {
+                    return;
+                }
+                if (verifyChecksum(destination, expectedSha256)) {
+                    return;
+                }
+                log.warn("Cached runtime {} failed checksum validation, re-downloading", destination);
+                Files.deleteIfExists(destination);
+            }
+
+            log.info("Downloading PGlite runtime from {}", urlString);
+            Path temp = Files.createTempFile(destination.getParent(), destination.getFileName().toString(), ".part");
+            try {
+                downloadTo(urlString, temp);
+                if (expectedSha256 != null && !verifyChecksum(temp, expectedSha256)) {
+                    throw new IOException("Checksum mismatch for " + urlString + " (expected " + expectedSha256 + ")");
+                }
+                Files.move(temp, destination, StandardCopyOption.REPLACE_EXISTING);
+            } finally {
+                Files.deleteIfExists(temp);
+            }
         }
-        log.info("Downloading PGlite runtime from {}", urlString);
+    }
+
+    private void downloadTo(String urlString, Path destination) throws IOException {
         URL url = new URL(urlString);
         HttpURLConnection connection = (HttpURLConnection) url.openConnection();
         connection.setConnectTimeout(15_000);
@@ -502,12 +539,76 @@ final class PgliteServerProcess implements Closeable {
         if (status >= 400) {
             throw new IOException("Failed to download " + urlString + ": HTTP " + status);
         }
-        Files.createDirectories(destination.getParent());
         try (InputStream in = connection.getInputStream()) {
             Files.copy(in, destination, StandardCopyOption.REPLACE_EXISTING);
         } finally {
             connection.disconnect();
         }
+    }
+
+    private String resolveTemplate(String template, String osToken, String archToken) {
+        if (template == null || template.isBlank()) {
+            return null;
+        }
+        return template.replace("{os}", osToken).replace("{arch}", archToken);
+    }
+
+    private boolean verifyChecksum(Path file, String expectedSha256) throws IOException {
+        String normalizedExpected = normalizeChecksum(expectedSha256);
+        if (normalizedExpected == null || normalizedExpected.isBlank()) {
+            return true;
+        }
+        String actual = computeSha256(file);
+        return normalizedExpected.equals(actual);
+    }
+
+    private String computeSha256(Path file) throws IOException {
+        MessageDigest digest = createSha256Digest();
+        try (DigestInputStream in = new DigestInputStream(Files.newInputStream(file), digest)) {
+            byte[] buffer = new byte[8192];
+            while (in.read(buffer) != -1) {
+                // drain
+            }
+        }
+        byte[] hash = digest.digest();
+        StringBuilder sb = new StringBuilder(hash.length * 2);
+        for (byte b : hash) {
+            sb.append(String.format(Locale.ROOT, "%02x", b));
+        }
+        return sb.toString();
+    }
+
+    private MessageDigest createSha256Digest() {
+        try {
+            return MessageDigest.getInstance("SHA-256");
+        } catch (NoSuchAlgorithmException ex) {
+            throw new IllegalStateException("SHA-256 MessageDigest not available", ex);
+        }
+    }
+
+    private String normalizeChecksum(String checksum) {
+        if (checksum == null) {
+            return null;
+        }
+        StringBuilder sb = new StringBuilder();
+        for (int i = 0; i < checksum.length(); i++) {
+            char c = checksum.charAt(i);
+            if (Character.isWhitespace(c)) {
+                continue;
+            }
+            if ((c >= '0' && c <= '9') || (c >= 'a' && c <= 'f') || (c >= 'A' && c <= 'F')) {
+                sb.append(Character.toLowerCase(c));
+            } else {
+                throw new IllegalArgumentException("Checksum contains invalid character: " + c);
+            }
+        }
+        if (sb.length() == 0) {
+            return null;
+        }
+        if (sb.length() != 64) {
+            throw new IllegalArgumentException("Checksum must be 64 hexadecimal characters (SHA-256)");
+        }
+        return sb.toString();
     }
 
     private void unzip(Path zipFile, Path destination) throws IOException {

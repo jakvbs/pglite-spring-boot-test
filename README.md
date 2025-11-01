@@ -43,6 +43,7 @@ Optional properties (prefix `pglite.`):
 - `jdbc-params` – default `sslmode=disable&preferQueryMode=simple`
 - `path-prepend` – semicolon separated directories prepended to the `PATH` seen by the helper process
 - `runtime-download-url-template` – optional template (e.g. `https://example.com/runtime-{os}-{arch}.zip`) for platform-specific helper bundles (`{os}` = `linux`/`darwin`, `{arch}` = `x64`/`arm64`)
+- `runtime-download-sha256-template` – optional SHA-256 checksum template (same `{os}` / `{arch}` tokens) used to verify downloaded bundles before extraction (64 hexadecimal characters)
 - `runtime-cache-dir` – optional directory used to cache downloaded bundles
 - `log-level` – helper verbosity (`DEBUG`, `INFO`, `WARNING`, `ERROR`; default `WARNING`)
 
@@ -99,9 +100,32 @@ For macOS/Linux you can either keep relying on `node` present in `PATH` or provi
 https://example.com/pglite-runtime-{os}-{arch}.zip
 ```
 
-where `{os}` is `linux` or `darwin`, and `{arch}` is `x64` or `arm64`. The starter downloads the archive on first use (into the optional `runtime-cache-dir` or the system temp), unpacks it alongside the helper, and adds the contained `bin/node` to the candidate list.
+where `{os}` is `linux` or `darwin`, and `{arch}` is `x64` or `arm64`. Pair this with `pglite.runtime-download-sha256-template` so every download is verified before extraction. The starter downloads the archive on first use (into the optional `runtime-cache-dir` or the system temp), unpacks it alongside the helper, and adds the contained `bin/node` to the candidate list.
 
 ## Development
+
+### Rebuilding the helper runtime
+
+The bundled `runtime.zip` is reproducible. To regenerate it from upstream sources:
+
+1. Export the official SHA256 for the Windows Node distribution you intend to embed (from https://nodejs.org/dist/vX.Y.Z/SHASUMS256.txt), for example:
+
+   ```bash
+   export NODE_VERSION=24.11.0
+   export NODE_SHA256="<sha256 from Node release>"
+   ```
+
+2. Run the helper script:
+
+   ```bash
+   ./scripts/build-runtime.sh
+   ```
+
+   The script downloads the Node archive, checks the hash, performs `npm ci --omit=dev --ignore-scripts`, normalises timestamps, and rewrites `src/main/resources/pglite/runtime.zip`.
+
+3. Commit the updated archive together with any dependency changes (`package.json`, `package-lock.json`, `start.mjs`).
+
+### Tests
 
 - `PgliteServerProcessIntegrationTest` exercises Liquibase migrations, prepared statements, and the single-connection JDBC path exposed by the Node helper.
 - `PgliteAutoConfigurationIntegrationTest` boots the auto-configuration through `ApplicationContextRunner` to verify the Spring context wiring and Liquibase bootstrap.

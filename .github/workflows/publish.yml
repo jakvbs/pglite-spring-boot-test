@@ -24,7 +24,7 @@ jobs:
         env:
           SIGNING_KEY: ${{ secrets.SIGNING_KEY }}
       - name: Publish to Maven Central (auto)
-        run: mvn -B -DskipTests -Dgpg.passphrase="${{ secrets.SIGNING_PASSWORD }}" deploy
+        run: mvn -B -DskipTests -Dgpg.skip=false -Dgpg.passphrase="${{ secrets.SIGNING_PASSWORD }}" deploy
         env:
           CENTRAL_USERNAME: ${{ secrets.CENTRAL_USERNAME }}
           CENTRAL_PASSWORD: ${{ secrets.CENTRAL_PASSWORD }}

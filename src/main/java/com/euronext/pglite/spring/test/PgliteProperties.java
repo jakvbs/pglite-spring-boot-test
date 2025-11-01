@@ -53,6 +53,12 @@ public class PgliteProperties {
     /** Optional directory used to cache downloaded runtimes (defaults to system temp). */
     private String runtimeCacheDir;
 
+    /**
+     * Optional SHA-256 checksum template that must match the downloaded runtime archive.
+     * Supports the same {os} / {arch} tokens as {@link #runtimeDownloadUrlTemplate}.
+     */
+    private String runtimeDownloadSha256Template;
+
     /** Helper log level propagated to the Node runtime. */
     private LogLevel logLevel = LogLevel.defaultLevel();
 
@@ -80,6 +86,8 @@ public class PgliteProperties {
     public void setRuntimeDownloadUrlTemplate(String runtimeDownloadUrlTemplate) { this.runtimeDownloadUrlTemplate = runtimeDownloadUrlTemplate; }
     public String getRuntimeCacheDir() { return runtimeCacheDir; }
     public void setRuntimeCacheDir(String runtimeCacheDir) { this.runtimeCacheDir = runtimeCacheDir; }
+    public String getRuntimeDownloadSha256Template() { return runtimeDownloadSha256Template; }
+    public void setRuntimeDownloadSha256Template(String runtimeDownloadSha256Template) { this.runtimeDownloadSha256Template = runtimeDownloadSha256Template; }
     public LogLevel getLogLevel() { return logLevel; }
     public void setLogLevel(LogLevel logLevel) { this.logLevel = logLevel == null ? LogLevel.defaultLevel() : logLevel; }
 }
