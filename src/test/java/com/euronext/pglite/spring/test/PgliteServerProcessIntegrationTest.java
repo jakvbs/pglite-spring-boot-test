@@ -24,6 +24,8 @@ class PgliteServerProcessIntegrationTest {
                 null,
                 null,
                 null,
+                null,
+                null,
                 null
         )) {
             server.start();

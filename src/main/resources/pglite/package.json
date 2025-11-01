@@ -1,7 +1,7 @@
 {
-  "name": "shareholder-register-pglite-helper",
+  "name": "pglite-spring-boot-test-helper",
   "version": "0.1.0",
-  "description": "PGlite helper runtime used by shareholder-register embedded profile tests.",
+  "description": "Helper runtime used by the pglite-spring-boot-test library to expose PGWire over PGlite.",
   "type": "module",
   "main": "start.mjs",
   "scripts": {

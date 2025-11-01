@@ -15,11 +15,32 @@ const DEFAULT_HOST = '127.0.0.1';
 const DEFAULT_PORT = 0;
 const SERVER_VERSION = '16.3 (PGlite 0.2.0)';
 
-// Supported users for authentication
-const VALID_USERS = {
-  'postgres': '',  // Admin user with no password
-  'shareholder-register': 'shareholder-register',  // Application user
-};
+function loadUserCatalog(log) {
+  const defaults = { postgres: '' };
+  const raw = process.env.PGLITE_USERS_JSON;
+  if (!raw) {
+    return defaults;
+  }
+  try {
+    const parsed = JSON.parse(raw);
+    if (!parsed || typeof parsed !== 'object') {
+      return defaults;
+    }
+    const result = { ...defaults };
+    for (const [user, password] of Object.entries(parsed)) {
+      if (typeof user !== 'string' || user.trim() === '') {
+        continue;
+      }
+      result[user] = typeof password === 'string' ? password : '';
+    }
+    return result;
+  } catch (err) {
+    if (typeof log === "function" && log('ERROR')) {
+      console.error(`Failed to parse PGLITE_USERS_JSON: ${err.message}`);
+    }
+    return defaults;
+  }
+}
 
 const connectionSecretKeyMap = new WeakMap();
 
@@ -67,6 +88,8 @@ async function main() {
     return levels[level] >= levels[logLevel];
   };
 
+  const validUsers = loadUserCatalog(shouldLog);
+
   let db;
   try {
     db = new PGlite();
@@ -95,7 +118,7 @@ async function main() {
             if (shouldLog('DEBUG')) {
               console.error(`Generating pre-hash for user: ${username}`);
             }
-            const password = VALID_USERS[username];
+            const password = validUsers[username];
             if (password === undefined) {
               if (shouldLog('DEBUG')) {
                 console.error(`Unknown user during pre-hash lookup: ${username}`);

@@ -21,6 +21,7 @@ import java.time.Duration;
 import java.util.ArrayList;
 import java.util.Collections;
 import java.util.Comparator;
+import java.util.LinkedHashMap;
 import java.util.LinkedHashSet;
 import java.util.List;
 import java.util.Locale;
@@ -53,6 +54,8 @@ final class PgliteServerProcess implements Closeable {
     private final String pathPrepend;
     private final String runtimeDownloadUrlTemplate;
     private final String runtimeCacheDir;
+    private final String jdbcUsername;
+    private final String jdbcPassword;
 
     private volatile int port;
     private final AtomicReference<Process> processRef = new AtomicReference<>();
@@ -62,7 +65,8 @@ final class PgliteServerProcess implements Closeable {
 
     PgliteServerProcess(String host, int configuredPort, Duration startupTimeout,
                         String nodeCommand, String pathPrepend,
-                        String runtimeDownloadUrlTemplate, String runtimeCacheDir) {
+                        String runtimeDownloadUrlTemplate, String runtimeCacheDir,
+                        String jdbcUsername, String jdbcPassword) {
         this.host = Objects.requireNonNull(host);
         this.configuredPort = configuredPort;
         this.startupTimeout = Objects.requireNonNull(startupTimeout);
@@ -70,6 +74,8 @@ final class PgliteServerProcess implements Closeable {
         this.pathPrepend = pathPrepend;
         this.runtimeDownloadUrlTemplate = runtimeDownloadUrlTemplate;
         this.runtimeCacheDir = runtimeCacheDir;
+        this.jdbcUsername = jdbcUsername;
+        this.jdbcPassword = jdbcPassword;
     }
 
     void start() {
@@ -99,6 +105,7 @@ final class PgliteServerProcess implements Closeable {
                 Map<String, String> env = pb.environment();
                 env.put("PGLITE_PORT", Integer.toString(portToUse));
                 env.put("PGLITE_HOST", host);
+                env.put("PGLITE_USERS_JSON", buildUsersJson());
                 if (pathPrepend != null && !pathPrepend.isBlank()) {
                     env.put("PATH", pathPrepend + File.pathSeparator + env.getOrDefault("PATH", ""));
                 }
@@ -573,5 +580,66 @@ final class PgliteServerProcess implements Closeable {
         } catch (IOException ex) {
             throw new IllegalStateException("Unable to allocate TCP port for PGlite", ex);
         }
+    }
+
+    private String buildUsersJson() {
+        Map<String, String> users = new LinkedHashMap<>();
+        users.put("postgres", "");
+        if (jdbcUsername != null && !jdbcUsername.isBlank()) {
+            users.put(jdbcUsername, jdbcPassword != null ? jdbcPassword : "");
+        }
+        StringBuilder json = new StringBuilder("{");
+        boolean first = true;
+        for (Map.Entry<String, String> entry : users.entrySet()) {
+            if (entry.getKey() == null || entry.getKey().isBlank()) {
+                continue;
+            }
+            if (!first) {
+                json.append(',');
+            }
+            first = false;
+            json.append('"').append(escapeJson(entry.getKey())).append('"')
+                    .append(':')
+                    .append('"').append(escapeJson(entry.getValue())).append('"');
+        }
+        json.append('}');
+        return json.toString();
+    }
+
+    private String escapeJson(String value) {
+        StringBuilder sb = new StringBuilder();
+        for (int i = 0; i < value.length(); i++) {
+            char c = value.charAt(i);
+            switch (c) {
+                case '"':
+                    sb.append("\\\"");
+                    break;
+                case '\\':
+                    sb.append("\\\\");
+                    break;
+                case '\b':
+                    sb.append("\\b");
+                    break;
+                case '\f':
+                    sb.append("\\f");
+                    break;
+                case '\n':
+                    sb.append("\\n");
+                    break;
+                case '\r':
+                    sb.append("\\r");
+                    break;
+                case '\t':
+                    sb.append("\\t");
+                    break;
+                default:
+                    if (c < 0x20) {
+                        sb.append(String.format("\\u%04x", (int) c));
+                    } else {
+                        sb.append(c);
+                    }
+            }
+        }
+        return sb.toString();
     }
 }

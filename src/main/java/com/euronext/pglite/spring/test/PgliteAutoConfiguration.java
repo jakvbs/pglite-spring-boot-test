@@ -23,7 +23,8 @@ public class PgliteAutoConfiguration {
     PgliteServerProcess pgliteServerProcess(PgliteProperties props) {
         return new PgliteServerProcess(
                 props.getHost(), props.getPort(), props.getStartupTimeout(), props.getNodeCommand(),
-                props.getPathPrepend(), props.getRuntimeDownloadUrlTemplate(), props.getRuntimeCacheDir()
+                props.getPathPrepend(), props.getRuntimeDownloadUrlTemplate(), props.getRuntimeCacheDir(),
+                props.getUsername(), props.getPassword()
         );
     }
 
