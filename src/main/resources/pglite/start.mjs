@@ -291,29 +291,6 @@ async function handleFrontendMessageBuffered(connection, data, db, shouldLog) {
   return undefined; // unknown, let base decide
 }
 
-async function collectProtocolResponses(result) {
-  if (!result) return [];
-  // Prefer raw backend wire buffer if available
-  if (result && result.data instanceof Uint8Array && result.data.length > 0) {
-    return [result.data];
-  }
-  // Fallbacks
-  if (Array.isArray(result)) return result.map(extractPayload).filter(Boolean);
-  if (typeof result[Symbol.asyncIterator] === 'function') {
-    const frames = [];
-    for await (const entry of result) {
-      const payload = extractPayload(entry);
-      if (payload) frames.push(payload);
-    }
-    return frames;
-  }
-  if (typeof result[Symbol.iterator] === 'function') {
-    return Array.from(result, extractPayload).filter(Boolean);
-  }
-  const single = extractPayload(result);
-  return single ? [single] : [];
-}
-
 function extractPayload(entry) {
   if (!entry) {
     return undefined;
