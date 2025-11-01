@@ -213,10 +213,16 @@ final class PgliteServerProcess implements Closeable {
             String line;
             while ((line = reader.readLine()) != null) {
                 appendOutput(line);
-                if (line.contains("\"event\"")) {
-                    if (line.contains("\"READY\"")) {
+                // Parse simple JSON line with {"event": "READY"|"ERROR", ...}
+                String trimmed = line.trim();
+                if (!(trimmed.startsWith("{") && trimmed.endsWith("}"))) {
+                    continue;
+                }
+                String lower = trimmed.toLowerCase(Locale.ROOT);
+                if (lower.contains("\"event\"")) {
+                    if (lower.contains("\"ready\"")) {
                         ready.countDown();
-                    } else if (line.contains("\"ERROR\"")) {
+                    } else if (lower.contains("\"error\"")) {
                         ready.countDown();
                     }
                 }
