@@ -44,6 +44,7 @@ Optional properties (prefix `pglite.`):
 - `path-prepend` – semicolon separated directories prepended to the `PATH` seen by the helper process
 - `runtime-download-url-template` – optional template (e.g. `https://example.com/runtime-{os}-{arch}.zip`) for platform-specific helper bundles (`{os}` = `linux`/`darwin`, `{arch}` = `x64`/`arm64`)
 - `runtime-cache-dir` – optional directory used to cache downloaded bundles
+- `log-level` – helper verbosity (`DEBUG`, `INFO`, `WARNING`, `ERROR`; default `WARNING`)
 
 ## Notes
 

@@ -6,6 +6,17 @@ import java.time.Duration;
 
 @ConfigurationProperties("pglite")
 public class PgliteProperties {
+    public enum LogLevel {
+        DEBUG,
+        INFO,
+        WARNING,
+        ERROR;
+
+        public static LogLevel defaultLevel() {
+            return WARNING;
+        }
+    }
+
     /** Enable auto-configuration. */
     private boolean enabled = false;
 
@@ -42,6 +53,9 @@ public class PgliteProperties {
     /** Optional directory used to cache downloaded runtimes (defaults to system temp). */
     private String runtimeCacheDir;
 
+    /** Helper log level propagated to the Node runtime. */
+    private LogLevel logLevel = LogLevel.defaultLevel();
+
     public boolean isEnabled() { return enabled; }
     public void setEnabled(boolean enabled) { this.enabled = enabled; }
     public String getHost() { return host; }
@@ -66,4 +80,6 @@ public class PgliteProperties {
     public void setRuntimeDownloadUrlTemplate(String runtimeDownloadUrlTemplate) { this.runtimeDownloadUrlTemplate = runtimeDownloadUrlTemplate; }
     public String getRuntimeCacheDir() { return runtimeCacheDir; }
     public void setRuntimeCacheDir(String runtimeCacheDir) { this.runtimeCacheDir = runtimeCacheDir; }
+    public LogLevel getLogLevel() { return logLevel; }
+    public void setLogLevel(LogLevel logLevel) { this.logLevel = logLevel == null ? LogLevel.defaultLevel() : logLevel; }
 }

@@ -26,7 +26,8 @@ class PgliteServerProcessIntegrationTest {
                 null,
                 null,
                 null,
-                null
+                null,
+                PgliteProperties.LogLevel.WARNING
         )) {
             server.start();
 

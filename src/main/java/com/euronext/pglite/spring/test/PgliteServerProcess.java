@@ -46,6 +46,7 @@ final class PgliteServerProcess implements Closeable {
     private static final String START_SCRIPT_RESOURCE = "/pglite/start.mjs";
     private static final String PACKAGE_JSON_RESOURCE = "/pglite/package.json";
     private static final String PACKAGE_LOCK_RESOURCE = "/pglite/package-lock.json";
+    private static final int MAX_CAPTURED_LINES = 200;
 
     private final String host;
     private final int configuredPort;
@@ -56,6 +57,7 @@ final class PgliteServerProcess implements Closeable {
     private final String runtimeCacheDir;
     private final String jdbcUsername;
     private final String jdbcPassword;
+    private final PgliteProperties.LogLevel logLevel;
 
     private volatile int port;
     private final AtomicReference<Process> processRef = new AtomicReference<>();
@@ -66,7 +68,8 @@ final class PgliteServerProcess implements Closeable {
     PgliteServerProcess(String host, int configuredPort, Duration startupTimeout,
                         String nodeCommand, String pathPrepend,
                         String runtimeDownloadUrlTemplate, String runtimeCacheDir,
-                        String jdbcUsername, String jdbcPassword) {
+                        String jdbcUsername, String jdbcPassword,
+                        PgliteProperties.LogLevel logLevel) {
         this.host = Objects.requireNonNull(host);
         this.configuredPort = configuredPort;
         this.startupTimeout = Objects.requireNonNull(startupTimeout);
@@ -76,6 +79,7 @@ final class PgliteServerProcess implements Closeable {
         this.runtimeCacheDir = runtimeCacheDir;
         this.jdbcUsername = jdbcUsername;
         this.jdbcPassword = jdbcPassword;
+        this.logLevel = logLevel == null ? PgliteProperties.LogLevel.defaultLevel() : logLevel;
     }
 
     void start() {
@@ -98,35 +102,9 @@ final class PgliteServerProcess implements Closeable {
         for (String[] candidate : commandCandidates) {
             String joined = String.join(" ", candidate);
             try {
-                ProcessBuilder pb = new ProcessBuilder(candidate);
-                pb.redirectErrorStream(true);
-                pb.directory(runtimeDir.toFile());
-
-                Map<String, String> env = pb.environment();
-                env.put("PGLITE_PORT", Integer.toString(portToUse));
-                env.put("PGLITE_HOST", host);
-                env.put("PGLITE_USERS_JSON", buildUsersJson());
-                if (pathPrepend != null && !pathPrepend.isBlank()) {
-                    env.put("PATH", pathPrepend + File.pathSeparator + env.getOrDefault("PATH", ""));
-                }
-
-                Process process = pb.start();
-                this.ioPool = Executors.newSingleThreadExecutor(r -> {
-                    Thread t = new Thread(r, "pglite-io");
-                    t.setDaemon(true);
-                    return t;
-                });
-                CountDownLatch ready = new CountDownLatch(1);
-                AtomicReference<Throwable> readErr = new AtomicReference<>();
-                ioPool.submit(() -> readLoop(process.getInputStream(), ready, readErr));
-                awaitReady(ready, readErr, process);
-                this.processRef.set(process);
-                Runtime.getRuntime().addShutdownHook(new Thread(this::safeStop));
-                log.info("PGlite started on {}:{} via {}", host, portToUse, joined);
+                startWithCandidate(candidate, portToUse, joined);
                 return;
-            } catch (IOException ex) {
-                attemptErrors.add(joined + " -> " + ex.getMessage());
-            } catch (IllegalStateException ex) {
+            } catch (IOException | IllegalStateException ex) {
                 attemptErrors.add(joined + " -> " + ex.getMessage());
             }
         }
@@ -236,8 +214,49 @@ final class PgliteServerProcess implements Closeable {
     private void appendOutput(String line) {
         synchronized (outputBuffer) {
             outputBuffer.add(line);
-            if (outputBuffer.size() > 200) {
+            if (outputBuffer.size() > MAX_CAPTURED_LINES) {
                 outputBuffer.remove(0);
+            }
+        }
+    }
+
+    private void startWithCandidate(String[] command, int portToUse, String joinedCommand) throws IOException {
+        ProcessBuilder pb = new ProcessBuilder(command);
+        pb.redirectErrorStream(true);
+        pb.directory(runtimeDir.toFile());
+
+        Map<String, String> env = pb.environment();
+        env.put("PGLITE_PORT", Integer.toString(portToUse));
+        env.put("PGLITE_HOST", host);
+        env.put("PGLITE_USERS_JSON", buildUsersJson());
+        env.put("PGLITE_LOG_LEVEL", logLevel.name());
+        if (pathPrepend != null && !pathPrepend.isBlank()) {
+            env.put("PATH", pathPrepend + File.pathSeparator + env.getOrDefault("PATH", ""));
+        }
+
+        Process process = pb.start();
+        ExecutorService pool = Executors.newSingleThreadExecutor(r -> {
+            Thread t = new Thread(r, "pglite-io");
+            t.setDaemon(true);
+            return t;
+        });
+
+        boolean success = false;
+        try {
+            CountDownLatch ready = new CountDownLatch(1);
+            AtomicReference<Throwable> readErr = new AtomicReference<>();
+            pool.submit(() -> readLoop(process.getInputStream(), ready, readErr));
+            awaitReady(ready, readErr, process);
+
+            this.ioPool = pool;
+            this.processRef.set(process);
+            Runtime.getRuntime().addShutdownHook(new Thread(this::safeStop));
+            log.info("PGlite started on {}:{} via {}", host, portToUse, joinedCommand);
+            success = true;
+        } finally {
+            if (!success) {
+                safeDestroy(process);
+                pool.shutdownNow();
             }
         }
     }
